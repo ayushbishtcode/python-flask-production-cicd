@@ -16,10 +16,7 @@ class Employee(db.Model):
 
     salary = db.Column(db.Integer, nullable=False)
 
-    created_at = db.Column(
-        db.DateTime,
-        default=datetime.utcnow
-    )
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     def __repr__(self):
         return f"<Employee {self.name}>"
