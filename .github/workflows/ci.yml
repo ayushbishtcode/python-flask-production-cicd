@@ -45,7 +45,7 @@ jobs:
         run: docker build -t employee-api:ci ./app
 
       - name: Scan Docker image with Trivy
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           image-ref: employee-api:ci
           format: table
