@@ -10,4 +10,4 @@ COPY app/ ./app/
 
 EXPOSE 5005
 
-CMD ["python", "app/run.py"]
+CMD ["python", "-m", "app.run"]
