@@ -8,3 +8,11 @@ terraform.tfvars
 *.tfstate
 *.tfstate.*
 .terraform/
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+.terraform.lock.hcl
+terraform/terraform.tfvars
