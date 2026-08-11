@@ -21,3 +21,20 @@ variable "availability_zones" {
   type        = list(string)
   default     = ["us-east-1a", "us-east-1b"]
 }
+
+variable "ecr_repository_url" {
+  description = "ECR repository URL for the employee API"
+  type        = string
+}
+
+variable "db_username" {
+  description = "PostgreSQL database username"
+  type        = string
+  sensitive   = true
+}
+
+variable "db_password" {
+  description = "PostgreSQL database password"
+  type        = string
+  sensitive   = true
+}

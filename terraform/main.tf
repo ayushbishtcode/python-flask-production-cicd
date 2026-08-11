@@ -115,6 +115,16 @@ resource "aws_route_table" "app_private" {
   }
 }
 
+resource "aws_route_table" "database_private" {
+  vpc_id = aws_vpc.main.id
+
+  tags = {
+    Name    = "${var.project_name}-database-private-rt"
+    Project = var.project_name
+    Tier    = "database"
+  }
+}
+
 resource "aws_route" "app_nat" {
   route_table_id         = aws_route_table.app_private.id
   destination_cidr_block = "0.0.0.0/0"
@@ -126,6 +136,13 @@ resource "aws_route_table_association" "app_private" {
 
   subnet_id      = aws_subnet.app[count.index].id
   route_table_id = aws_route_table.app_private.id
+}
+
+resource "aws_route_table_association" "database_private" {
+  count = length(var.availability_zones)
+
+  subnet_id      = aws_subnet.database[count.index].id
+  route_table_id = aws_route_table.database_private.id
 }
 
 resource "aws_security_group" "alb" {
@@ -223,3 +240,326 @@ resource "aws_vpc_security_group_egress_rule" "rds_all" {
 
   description = "Allow outbound traffic"
 }
+
+resource "aws_iam_role" "ecs_instance" {
+  name = "${var.project_name}-ecs-instance-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [
+      {
+        Effect = "Allow"
+
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+
+  tags = {
+    Name    = "${var.project_name}-ecs-instance-role"
+    Project = var.project_name
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_instance" {
+  role       = aws_iam_role.ecs_instance.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
+}
+
+resource "aws_iam_instance_profile" "ecs" {
+  name = "${var.project_name}-ecs-instance-profile"
+  role = aws_iam_role.ecs_instance.name
+}
+
+data "aws_ssm_parameter" "ecs_ami" {
+  name = "/aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id"
+}
+
+resource "aws_ecs_cluster" "main" {
+  name = "${var.project_name}-cluster"
+
+  tags = {
+    Name    = "${var.project_name}-cluster"
+    Project = var.project_name
+  }
+}
+
+resource "aws_launch_template" "ecs" {
+  name_prefix   = "${var.project_name}-ecs-"
+  image_id      = data.aws_ssm_parameter.ecs_ami.value
+  instance_type = "t3.micro"
+
+  iam_instance_profile {
+    name = aws_iam_instance_profile.ecs.name
+  }
+
+  vpc_security_group_ids = [
+    aws_security_group.ecs.id
+  ]
+
+  user_data = base64encode(<<-EOF
+    #!/bin/bash
+    echo ECS_CLUSTER=${aws_ecs_cluster.main.name} >> /etc/ecs/ecs.config
+  EOF
+  )
+
+  tag_specifications {
+    resource_type = "instance"
+
+    tags = {
+      Name    = "${var.project_name}-ecs-instance"
+      Project = var.project_name
+      Tier    = "application"
+    }
+  }
+
+  tags = {
+    Name    = "${var.project_name}-ecs-launch-template"
+    Project = var.project_name
+  }
+}
+
+resource "aws_autoscaling_group" "ecs" {
+  name = "${var.project_name}-ecs-asg"
+
+  min_size         = 1
+  max_size         = 2
+  desired_capacity = 1
+
+  vpc_zone_identifier = aws_subnet.app[*].id
+
+  launch_template {
+    id      = aws_launch_template.ecs.id
+    version = "$Latest"
+  }
+
+  tag {
+    key                 = "Name"
+    value               = "${var.project_name}-ecs-instance"
+    propagate_at_launch = true
+  }
+
+  tag {
+    key                 = "Project"
+    value               = var.project_name
+    propagate_at_launch = true
+  }
+}
+
+resource "aws_ecs_task_definition" "app" {
+  family                   = "${var.project_name}-task"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["EC2"]
+
+  cpu    = "256"
+  memory = "512"
+
+  execution_role_arn = aws_iam_role.ecs_task_execution.arn
+
+  container_definitions = jsonencode([
+    {
+      name  = "employee-api"
+      image = "${var.ecr_repository_url}:latest"
+
+      essential = true
+
+      portMappings = [
+        {
+          containerPort = 5005
+          hostPort      = 5005
+          protocol      = "tcp"
+        }
+      ]
+
+      environment = [
+        {
+          name  = "FLASK_ENV"
+          value = "production"
+        }
+      ]
+    }
+  ])
+
+  tags = {
+    Name    = "${var.project_name}-task"
+    Project = var.project_name
+  }
+}
+
+resource "aws_iam_role" "ecs_task_execution" {
+  name = "${var.project_name}-ecs-task-execution-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [
+      {
+        Effect = "Allow"
+
+        Principal = {
+          Service = "ecs-tasks.amazonaws.com"
+        }
+
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+
+  tags = {
+    Name    = "${var.project_name}-ecs-task-execution-role"
+    Project = var.project_name
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_task_execution" {
+  role = aws_iam_role.ecs_task_execution.name
+
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+resource "aws_lb" "app" {
+  name               = "${var.project_name}-alb"
+  internal           = false
+  load_balancer_type = "application"
+
+  security_groups = [
+    aws_security_group.alb.id
+  ]
+
+  subnets = aws_subnet.public[*].id
+
+  tags = {
+    Name    = "${var.project_name}-alb"
+    Project = var.project_name
+    Tier    = "load-balancer"
+  }
+}
+
+resource "aws_lb_target_group" "app" {
+  name        = "${var.project_name}-tg"
+  port        = 5005
+  protocol    = "HTTP"
+  target_type = "ip"
+  vpc_id      = aws_vpc.main.id
+
+  health_check {
+    enabled             = true
+    path                = "/health"
+    protocol            = "HTTP"
+    port                = "traffic-port"
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+    timeout             = 5
+    interval            = 30
+    matcher             = "200"
+  }
+
+  tags = {
+    Name    = "${var.project_name}-tg"
+    Project = var.project_name
+  }
+}
+
+resource "aws_lb_listener" "http" {
+  load_balancer_arn = aws_lb.app.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.app.arn
+  }
+}
+
+resource "aws_ecs_service" "app" {
+  name            = "${var.project_name}-service"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.app.arn
+
+  desired_count = 1
+
+  launch_type = "EC2"
+
+  network_configuration {
+    subnets = aws_subnet.app[*].id
+
+    security_groups = [
+      aws_security_group.ecs.id
+    ]
+
+    assign_public_ip = false
+  }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.app.arn
+    container_name   = "employee-api"
+    container_port   = 5005
+  }
+
+  depends_on = [
+    aws_lb_listener.http
+  ]
+
+  tags = {
+    Name    = "${var.project_name}-service"
+    Project = var.project_name
+  }
+}
+
+resource "aws_db_subnet_group" "postgres" {
+  name = "${var.project_name}-db-subnet-group"
+
+  subnet_ids = aws_subnet.database[*].id
+
+  tags = {
+    Name    = "${var.project_name}-db-subnet-group"
+    Project = var.project_name
+    Tier    = "database"
+  }
+}
+
+resource "aws_db_instance" "postgres" {
+  identifier = "${var.project_name}-postgres"
+
+  engine         = "postgres"
+  engine_version = "17"
+
+  instance_class        = "db.t4g.micro"
+  allocated_storage     = 20
+  max_allocated_storage = 50
+  storage_type          = "gp3"
+  storage_encrypted     = true
+
+  db_name  = "employee_db"
+  username = var.db_username
+  password = var.db_password
+  port     = 5432
+
+  db_subnet_group_name = aws_db_subnet_group.postgres.name
+
+  vpc_security_group_ids = [
+    aws_security_group.rds.id
+  ]
+
+  publicly_accessible = false
+
+  multi_az = false
+
+  backup_retention_period = 7
+
+  skip_final_snapshot = true
+
+  deletion_protection = false
+
+  tags = {
+    Name    = "${var.project_name}-postgres"
+    Project = var.project_name
+    Tier    = "database"
+  }
+}
+

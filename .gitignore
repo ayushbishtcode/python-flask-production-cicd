@@ -4,3 +4,7 @@ __pycache__/
 .pytest_cache/
 .coverage
 *.pyc
+terraform.tfvars
+*.tfstate
+*.tfstate.*
+.terraform/
