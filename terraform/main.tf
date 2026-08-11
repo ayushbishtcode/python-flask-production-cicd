@@ -351,6 +351,24 @@ resource "aws_autoscaling_group" "ecs" {
   }
 }
 
+resource "aws_secretsmanager_secret" "database_url" {
+  name = "${var.project_name}/database-url"
+
+  tags = {
+    Name    = "${var.project_name}-database-url"
+    Project = var.project_name
+    Tier    = "database"
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "database_url" {
+  secret_id = aws_secretsmanager_secret.database_url.id
+
+  secret_string = jsonencode({
+    DATABASE_URL = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.postgres.address}:5432/employee_db"
+  })
+}
+
 resource "aws_ecs_task_definition" "app" {
   family                   = "${var.project_name}-task"
   network_mode             = "awsvpc"
@@ -380,6 +398,13 @@ resource "aws_ecs_task_definition" "app" {
         {
           name  = "FLASK_ENV"
           value = "production"
+        }
+      ]
+
+      secrets = [
+        {
+          name      = "DATABASE_URL"
+          valueFrom = "${aws_secretsmanager_secret.database_url.arn}:DATABASE_URL::"
         }
       ]
     }
@@ -420,6 +445,27 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution" {
   role = aws_iam_role.ecs_task_execution.name
 
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+resource "aws_iam_role_policy" "ecs_secrets" {
+  name = "${var.project_name}-ecs-secrets"
+  role = aws_iam_role.ecs_task_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [
+      {
+        Effect = "Allow"
+
+        Action = [
+          "secretsmanager:GetSecretValue"
+        ]
+
+        Resource = aws_secretsmanager_secret.database_url.arn
+      }
+    ]
+  })
 }
 
 resource "aws_lb" "app" {
